@@ -24,8 +24,8 @@ def create_default_admin():
             cursor.execute("SELECT COUNT(*) FROM users")
             user_count = cursor.fetchone()[0]
 
-            if user_count == 0 and os.environ.get("DEFAULT_ADMIN_PASS"):
-                db.add_user("admin", os.environ["DEFAULT_ADMIN_PASS"], "admin")
+            if user_count == 0 and st.secrets["DEFAULT_ADMIN_PASS"]:
+                db.add_user("admin", st.secrets["DEFAULT_ADMIN_PASS"], "admin")
 
         conn.close()
     except Exception as e:

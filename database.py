@@ -1,4 +1,5 @@
 import psycopg2
+import streamlit as st
 import os
 import pandas as pd
 from datetime import datetime
@@ -10,12 +11,13 @@ class PoultryDatabase:
 
     def __init__(self):
         self.db_config = {
-            "dbname": os.environ.get("PG_DBNAME"),
-            "user": os.environ.get("PG_USER"),
-            "password": os.environ.get("PG_PASSWORD"),
-            "host": os.environ.get("PG_HOST"),
-            "port": 5432
-        }
+        "dbname": st.secrets["PG_DBNAME"],
+       "user": st.secrets["PG_USER"],
+    "password": st.secrets["PG_PASSWORD"],
+    "host": st.secrets["PG_HOST"],
+    "port": 5432
+}
+   
         self._create_tables()
         self._verify_tables()
         self._verify_database_setup()  # Add verification step
