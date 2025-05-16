@@ -1,20 +1,28 @@
-import sqlite3
+import psycopg2
 import os
 import pandas as pd
 from datetime import datetime
 import hashlib
 
 class PoultryDatabase:
-    def __init__(self, db_file="poultry_management.db"):
-        import os
-        self.db_file = os.path.join("secure", "poultry_management.db")
+    def connect(self):
+        return psycopg2.connect(**self.db_config)
+
+    def __init__(self):
+        self.db_config = {
+            "dbname": os.environ.get("PG_DBNAME"),
+            "user": os.environ.get("PG_USER"),
+            "password": os.environ.get("PG_PASSWORD"),
+            "host": os.environ.get("PG_HOST"),
+            "port": 5432
+        }
         self._create_tables()
         self._verify_tables()
         self._verify_database_setup()  # Add verification step
     
     def _create_tables(self):
         """Initialize the database by creating tables if they don't exist."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -108,7 +116,7 @@ class PoultryDatabase:
     
     def _verify_tables(self):
         """Verify that all tables have the correct structure."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -150,7 +158,7 @@ class PoultryDatabase:
     
     def _update_poultry_transactions_table(self):
         """Update poultry_transactions table with new payment columns if they don't exist."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -211,13 +219,13 @@ class PoultryDatabase:
     # User management methods
     def add_user(self, username, password, role="user", created_by_admin_id=None):
         """Add a new user to the database. Only admin can create users."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if creator is admin
             if created_by_admin_id:
-                cursor.execute("SELECT role FROM users WHERE user_id = ?", (created_by_admin_id,))
+                cursor.execute("SELECT role FROM users WHERE user_id = %s", (created_by_admin_id,))
                 creator_role = cursor.fetchone()
                 if not creator_role or creator_role[0] != 'admin':
                     conn.close()
@@ -228,20 +236,20 @@ class PoultryDatabase:
             
             cursor.execute('''
             INSERT INTO users (username, password_hash, role) 
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             ''', (username, password_hash, role))
             
             user_id = cursor.lastrowid
             conn.commit()
             return user_id
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             return None
         finally:
             conn.close()
     
     def get_all_users(self):
         """Get all users (admin only)."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -256,14 +264,14 @@ class PoultryDatabase:
     
     def authenticate_user(self, username, password):
         """Authenticate a user and return their role if successful."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         
         cursor.execute('''
         SELECT user_id, role FROM users 
-        WHERE username = ? AND password_hash = ?
+        WHERE username = %s AND password_hash = %s
         ''', (username, password_hash))
         
         result = cursor.fetchone()
@@ -275,15 +283,15 @@ class PoultryDatabase:
     
     def get_user_balance(self, user_id):
         """Calculate the current balance for a user."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Get balance from ALL transactions
             cursor.execute('''
             SELECT COALESCE(SUM(CASE 
-                WHEN to_user_id = ? THEN amount 
-                WHEN from_user_id = ? THEN -amount 
+                WHEN to_user_id = %s THEN amount 
+                WHEN from_user_id = %s THEN -amount 
                 ELSE 0 
             END), 0)
             FROM money_transactions
@@ -303,7 +311,7 @@ class PoultryDatabase:
     # Money transaction methods
     def update_system_money(self, amount):
         """Update system money (admin's balance)."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -327,7 +335,7 @@ class PoultryDatabase:
                 INSERT INTO money_transactions (
                     date, from_user_id, to_user_id, amount, 
                     description, transaction_type, remaining_balance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
                     datetime.now().strftime('%Y-%m-%d'),
                     0 if adjustment_amount > 0 else admin_id,  # From system if positive, from admin if negative
@@ -352,7 +360,7 @@ class PoultryDatabase:
 
     def get_system_money(self):
         """Get current system money (which is the admin's balance)."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -370,8 +378,8 @@ class PoultryDatabase:
             # Get admin's balance including ALL transactions
             cursor.execute('''
             SELECT COALESCE(SUM(CASE 
-                WHEN to_user_id = ? THEN amount 
-                WHEN from_user_id = ? THEN -amount 
+                WHEN to_user_id = %s THEN amount 
+                WHEN from_user_id = %s THEN -amount 
                 ELSE 0 
             END), 0) as balance
             FROM money_transactions
@@ -384,7 +392,7 @@ class PoultryDatabase:
             cursor.execute('''
             SELECT date, from_user_id, to_user_id, amount, transaction_type, description
             FROM money_transactions
-            WHERE from_user_id = ? OR to_user_id = ?
+            WHERE from_user_id = %s OR to_user_id = %s
             ORDER BY date
             ''', (admin_id, admin_id))
             
@@ -404,7 +412,7 @@ class PoultryDatabase:
 
     def get_balance(self, user_id):
         """Calculate user balance from transactions."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -413,7 +421,7 @@ class PoultryDatabase:
             cursor.execute("""
                 SELECT from_user_id, to_user_id, amount, transaction_type, description
                 FROM money_transactions
-                WHERE from_user_id = ? OR to_user_id = ?
+                WHERE from_user_id = %s OR to_user_id = %s
             """, (user_id, user_id))
             
             transactions = cursor.fetchall()
@@ -442,7 +450,7 @@ class PoultryDatabase:
 
     def add_money_transaction(self, date, from_user_id, to_user_id, amount, description, transaction_type='normal', proof_image=None):
         """Add a new money transaction."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -455,7 +463,7 @@ class PoultryDatabase:
                     INSERT INTO money_transactions (
                         date, from_user_id, to_user_id, amount, 
                         description, transaction_type, remaining_balance, proof_image
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     date, from_user_id, to_user_id, amount, 
                     description, transaction_type,
@@ -483,7 +491,7 @@ class PoultryDatabase:
                 INSERT INTO money_transactions (
                     date, from_user_id, to_user_id, amount, 
                     description, transaction_type, remaining_balance, proof_image
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 date, from_user_id, to_user_id, amount, 
                 description, transaction_type,
@@ -505,7 +513,7 @@ class PoultryDatabase:
 
     def get_user_transactions_with_proof(self, user_id):
         """Get all transactions for a user including proof images."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         
         try:
             query = '''
@@ -514,14 +522,14 @@ class PoultryDatabase:
                 u1.username as from_username,
                 u2.username as to_username,
                 CASE 
-                    WHEN mt.from_user_id = ? THEN -mt.amount 
-                    WHEN mt.to_user_id = ? THEN mt.amount 
+                    WHEN mt.from_user_id = %s THEN -mt.amount 
+                    WHEN mt.to_user_id = %s THEN mt.amount 
                 END as balance_change,
                 mt.remaining_balance
             FROM money_transactions mt
             LEFT JOIN users u1 ON mt.from_user_id = u1.user_id
             LEFT JOIN users u2 ON mt.to_user_id = u2.user_id
-            WHERE mt.from_user_id = ? OR mt.to_user_id = ?
+            WHERE mt.from_user_id = %s OR mt.to_user_id = %s
             ORDER BY mt.date DESC, mt.created_at DESC
             '''
             
@@ -540,7 +548,7 @@ class PoultryDatabase:
 
     def get_all_transactions_with_proof(self):
         """Get all transactions with proof images (admin only)."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         
         try:
             query = '''
@@ -575,12 +583,12 @@ class PoultryDatabase:
     # Expense methods
     def add_expense(self, user_id, amount, category, description, date, receipt_image=None):
         """Add a new expense record"""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         c = conn.cursor()
         try:
             c.execute('''
             INSERT INTO expenses (user_id, amount, category, description, date, receipt_image)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ''', (user_id, amount, category, description, date, receipt_image))
             
             expense_id = c.lastrowid
@@ -594,7 +602,7 @@ class PoultryDatabase:
     
     def get_user_expenses(self, user_id):
         """Get all expenses for a user"""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         try:
             query = '''
             SELECT 
@@ -606,7 +614,7 @@ class PoultryDatabase:
                 receipt_image,
                 created_at
             FROM expenses
-            WHERE user_id = ?
+            WHERE user_id = %s
             ORDER BY date DESC, created_at DESC
             '''
             
@@ -620,7 +628,7 @@ class PoultryDatabase:
     
     def get_all_expenses(self):
         """Get all expenses (admin only)"""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         try:
             query = '''
             SELECT 
@@ -648,12 +656,12 @@ class PoultryDatabase:
     
     def delete_expense(self, expense_id, user_id):
         """Delete an expense record"""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         c = conn.cursor()
         try:
             c.execute('''
             DELETE FROM expenses 
-            WHERE expense_id = ? AND user_id = ?
+            WHERE expense_id = %s AND user_id = %s
             ''', (expense_id, user_id))
             
             if c.rowcount > 0:
@@ -669,12 +677,12 @@ class PoultryDatabase:
     # Farmer operations
     def add_farmer(self, name, contact_number=None, location=None):
         """Add a new farmer to the database."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         cursor.execute('''
         INSERT INTO farmers (name, contact_number, location) 
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         ''', (name, contact_number, location))
         
         farmer_id = cursor.lastrowid
@@ -684,7 +692,7 @@ class PoultryDatabase:
     
     def get_farmers(self):
         """Get all farmers."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         try:
             query = "SELECT * FROM farmers ORDER BY name"
             df = pd.read_sql(query, conn)
@@ -697,11 +705,11 @@ class PoultryDatabase:
     
     def get_farmer(self, farmer_id):
         """Get a specific farmer's details."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT * FROM farmers WHERE farmer_id = ?", (farmer_id,))
+            cursor.execute("SELECT * FROM farmers WHERE farmer_id = %s", (farmer_id,))
             result = cursor.fetchone()
             
             if result:
@@ -718,7 +726,7 @@ class PoultryDatabase:
 
     def edit_farmer(self, farmer_id, name=None, contact_number=None, location=None):
         """Edit farmer details."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -726,17 +734,17 @@ class PoultryDatabase:
             params = []
             
             if name is not None:
-                updates.append("name = ?")
+                updates.append("name = %s")
                 params.append(name)
             if contact_number is not None:
-                updates.append("contact_number = ?")
+                updates.append("contact_number = %s")
                 params.append(contact_number)
             if location is not None:
-                updates.append("location = ?")
+                updates.append("location = %s")
                 params.append(location)
             
             if updates:
-                query = f"UPDATE farmers SET {', '.join(updates)} WHERE farmer_id = ?"
+                query = f"UPDATE farmers SET {', '.join(updates)} WHERE farmer_id = %s"
                 params.append(farmer_id)
                 cursor.execute(query, params)
                 success = cursor.rowcount > 0
@@ -748,12 +756,12 @@ class PoultryDatabase:
     
     def delete_farmer(self, farmer_id, admin_id):
         """Delete a farmer. Only admin can delete farmers."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if the requesting user is admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (admin_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (admin_id,))
             admin_role = cursor.fetchone()
             
             if not admin_role or admin_role[0] != 'admin':
@@ -761,13 +769,13 @@ class PoultryDatabase:
                 return False
             
             # Check if farmer has any transactions
-            cursor.execute("SELECT COUNT(*) FROM poultry_transactions WHERE farmer_id = ?", (farmer_id,))
+            cursor.execute("SELECT COUNT(*) FROM poultry_transactions WHERE farmer_id = %s", (farmer_id,))
             transaction_count = cursor.fetchone()[0]
             
             if transaction_count > 0:
                 return False  # Cannot delete farmer with transactions
             
-            cursor.execute("DELETE FROM farmers WHERE farmer_id = ?", (farmer_id,))
+            cursor.execute("DELETE FROM farmers WHERE farmer_id = %s", (farmer_id,))
             success = cursor.rowcount > 0
             conn.commit()
             return success
@@ -779,7 +787,7 @@ class PoultryDatabase:
                               price_per_unit, vehicle_number=None, driver_name=None, notes=None,
                               payment_mode=None, payment_amount=0, payment_status="Unpaid"):
         """Add a new poultry transaction."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -793,7 +801,7 @@ class PoultryDatabase:
                 date, farmer_id, transaction_type, quantity, price_per_unit,
                 total_amount, vehicle_number, driver_name, notes,
                 payment_mode, payment_amount, payment_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             '''
             params = (
                 date, farmer_id, transaction_type, quantity, price_per_unit,
@@ -820,19 +828,19 @@ class PoultryDatabase:
             conn.close()
     
     def get_poultry_transactions(self, start_date=None, end_date=None, transaction_type=None):
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         try:
             query = "SELECT * FROM poultry_transactions WHERE 1=1"
             params = []
 
             if transaction_type:
-                query += " AND LOWER(transaction_type) = ?"
+                query += " AND LOWER(transaction_type) = %s"
                 params.append(transaction_type.lower())
             if start_date:
-                query += " AND date >= ?"
+                query += " AND date >= %s"
                 params.append(start_date)
             if end_date:
-                query += " AND date <= ?"
+                query += " AND date <= %s"
                 params.append(end_date)
 
             query += " ORDER BY date DESC, created_at DESC"
@@ -860,7 +868,7 @@ class PoultryDatabase:
     
     def get_transaction_summary(self, start_date=None, end_date=None):
         """Get summary of transactions between dates."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         
         query = '''
         SELECT 
@@ -887,11 +895,11 @@ class PoultryDatabase:
         params = []
         
         if start_date:
-            conditions.append("t.date >= ?")
+            conditions.append("t.date >= %s")
             params.append(start_date)
         
         if end_date:
-            conditions.append("t.date <= ?")
+            conditions.append("t.date <= %s")
             params.append(end_date)
         
         if conditions:
@@ -911,12 +919,12 @@ class PoultryDatabase:
     def edit_transaction(self, transaction_id, admin_id, date=None, quantity=None, 
                         price_per_unit=None, vehicle_number=None, driver_name=None, notes=None):
         """Edit a transaction. Only admin can edit transactions."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if the requesting user is admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (admin_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (admin_id,))
             admin_role = cursor.fetchone()
             
             if not admin_role or admin_role[0] != 'admin':
@@ -927,28 +935,28 @@ class PoultryDatabase:
             params = []
             
             if date is not None:
-                updates.append("date = ?")
+                updates.append("date = %s")
                 params.append(date)
             if quantity is not None:
-                updates.append("quantity = ?")
+                updates.append("quantity = %s")
                 params.append(quantity)
             if price_per_unit is not None:
-                updates.append("price_per_unit = ?")
+                updates.append("price_per_unit = %s")
                 params.append(price_per_unit)
-                updates.append("total_amount = ?")
-                params.append(quantity * price_per_unit if quantity is not None else cursor.execute("SELECT quantity FROM poultry_transactions WHERE transaction_id = ?", (transaction_id,)).fetchone()[0] * price_per_unit)
+                updates.append("total_amount = %s")
+                params.append(quantity * price_per_unit if quantity is not None else cursor.execute("SELECT quantity FROM poultry_transactions WHERE transaction_id = %s", (transaction_id,)).fetchone()[0] * price_per_unit)
             if vehicle_number is not None:
-                updates.append("vehicle_number = ?")
+                updates.append("vehicle_number = %s")
                 params.append(vehicle_number)
             if driver_name is not None:
-                updates.append("driver_name = ?")
+                updates.append("driver_name = %s")
                 params.append(driver_name)
             if notes is not None:
-                updates.append("notes = ?")
+                updates.append("notes = %s")
                 params.append(notes)
             
             if updates:
-                query = f"UPDATE poultry_transactions SET {', '.join(updates)} WHERE transaction_id = ?"
+                query = f"UPDATE poultry_transactions SET {', '.join(updates)} WHERE transaction_id = %s"
                 params.append(transaction_id)
                 cursor.execute(query, params)
                 success = cursor.rowcount > 0
@@ -960,12 +968,12 @@ class PoultryDatabase:
 
     def delete_user(self, user_id, admin_id):
         """Delete a user from the database. Only admin can delete users."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if the requesting user is admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (admin_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (admin_id,))
             admin_role = cursor.fetchone()
             
             if not admin_role or admin_role[0] != 'admin':
@@ -973,14 +981,14 @@ class PoultryDatabase:
                 return False
             
             # Check if trying to delete an admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (user_id,))
             user_role = cursor.fetchone()
             
             if user_role and user_role[0] == 'admin':
                 conn.close()
                 return False  # Cannot delete admin users
             
-            cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
             success = cursor.rowcount > 0
             conn.commit()
             return success
@@ -989,19 +997,19 @@ class PoultryDatabase:
 
     def delete_transaction(self, transaction_id, admin_id):
         """Delete a poultry transaction. Only admin can delete transactions."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if the requesting user is admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (admin_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (admin_id,))
             admin_role = cursor.fetchone()
             
             if not admin_role or admin_role[0] != 'admin':
                 conn.close()
                 return False
             
-            cursor.execute("DELETE FROM poultry_transactions WHERE transaction_id = ?", (transaction_id,))
+            cursor.execute("DELETE FROM poultry_transactions WHERE transaction_id = %s", (transaction_id,))
             success = cursor.rowcount > 0
             conn.commit()
             return success
@@ -1010,7 +1018,7 @@ class PoultryDatabase:
 
     def search_transactions(self, search_term, transaction_type=None):
         """Search transactions by farmer name, vehicle number, or notes."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         
         query = '''
         SELECT 
@@ -1021,10 +1029,10 @@ class PoultryDatabase:
         FROM poultry_transactions t
         JOIN farmers f ON t.farmer_id = f.farmer_id
         WHERE (
-            f.name LIKE ? OR
-            t.vehicle_number LIKE ? OR
-            t.driver_name LIKE ? OR
-            t.notes LIKE ?
+            f.name LIKE %s OR
+            t.vehicle_number LIKE %s OR
+            t.driver_name LIKE %s OR
+            t.notes LIKE %s
         )
         '''
         
@@ -1032,7 +1040,7 @@ class PoultryDatabase:
         params = [search_pattern, search_pattern, search_pattern, search_pattern]
         
         if transaction_type:
-            query += " AND t.transaction_type = ?"
+            query += " AND t.transaction_type = %s"
             params.append(transaction_type)
         
         query += " ORDER BY t.date DESC, t.created_at DESC"
@@ -1043,7 +1051,7 @@ class PoultryDatabase:
     
     def get_all_inventory(self):
         """Get all inventory data with supplier details."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         
         query = '''
         WITH total_stock AS (
@@ -1080,19 +1088,19 @@ class PoultryDatabase:
 
     def delete_transaction(self, transaction_id, admin_id):
         """Delete a transaction (admin only)."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
             # Check if the requesting user is admin
-            cursor.execute("SELECT role FROM users WHERE user_id = ?", (admin_id,))
+            cursor.execute("SELECT role FROM users WHERE user_id = %s", (admin_id,))
             admin_role = cursor.fetchone()
             
             if not admin_role or admin_role[0] != 'admin':
                 conn.close()
                 return False
             
-            cursor.execute("DELETE FROM poultry_transactions WHERE transaction_id = ?", (transaction_id,))
+            cursor.execute("DELETE FROM poultry_transactions WHERE transaction_id = %s", (transaction_id,))
             success = cursor.rowcount > 0
             conn.commit()
             return success
@@ -1101,14 +1109,14 @@ class PoultryDatabase:
 
     def update_payment(self, transaction_id, payment_amount, payment_mode='Cash'):
         """Update payment details for a transaction."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         # Get current transaction details
         cursor.execute('''
         SELECT total_amount, payment_amount 
         FROM poultry_transactions 
-        WHERE transaction_id = ?
+        WHERE transaction_id = %s
         ''', (transaction_id,))
         result = cursor.fetchone()
         
@@ -1122,10 +1130,10 @@ class PoultryDatabase:
         
         cursor.execute('''
         UPDATE poultry_transactions 
-        SET payment_amount = ?,
-            payment_mode = ?,
-            payment_status = ?
-        WHERE transaction_id = ?
+        SET payment_amount = %s,
+            payment_mode = %s,
+            payment_status = %s
+        WHERE transaction_id = %s
         ''', (new_payment_amount, payment_mode, payment_status, transaction_id))
         
         conn.commit()
@@ -1134,7 +1142,7 @@ class PoultryDatabase:
     
     def get_payment_summary(self, farmer_id=None, start_date=None, end_date=None):
         """Get payment summary for transactions."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         query = '''
@@ -1156,13 +1164,13 @@ class PoultryDatabase:
         params = []
         
         if farmer_id:
-            query += " AND t.farmer_id = ?"
+            query += " AND t.farmer_id = %s"
             params.append(farmer_id)
         if start_date:
-            query += " AND t.date >= ?"
+            query += " AND t.date >= %s"
             params.append(start_date)
         if end_date:
-            query += " AND t.date <= ?"
+            query += " AND t.date <= %s"
             params.append(end_date)
             
         query += " ORDER BY t.date DESC"
@@ -1180,7 +1188,7 @@ class PoultryDatabase:
 
     def add_payment_history(self, transaction_id, payment_date, payment_amount, payment_mode, notes=None):
         """Add a payment history record and update the transaction's payment status."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -1188,7 +1196,7 @@ class PoultryDatabase:
             cursor.execute('''
             SELECT total_amount, payment_amount 
             FROM poultry_transactions 
-            WHERE transaction_id = ?
+            WHERE transaction_id = %s
             ''', (transaction_id,))
             result = cursor.fetchone()
             
@@ -1206,16 +1214,16 @@ class PoultryDatabase:
             INSERT INTO payment_history (
                 transaction_id, payment_date, payment_amount, 
                 payment_mode, notes
-            ) VALUES (?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s)
             ''', (transaction_id, payment_date, payment_amount, payment_mode, notes))
             
             # Update transaction payment details
             cursor.execute('''
             UPDATE poultry_transactions 
-            SET payment_amount = ?,
-                payment_status = ?,
-                payment_mode = ?
-            WHERE transaction_id = ?
+            SET payment_amount = %s,
+                payment_status = %s,
+                payment_mode = %s
+            WHERE transaction_id = %s
             ''', (new_payment_amount, payment_status, payment_mode, transaction_id))
             
             conn.commit()
@@ -1229,7 +1237,7 @@ class PoultryDatabase:
 
     def get_payment_history(self, transaction_id):
         """Get payment history for a specific transaction."""
-        conn = sqlite3.connect(self.db_file)
+        conn = self.connect()
         
         query = '''
         SELECT 
@@ -1243,7 +1251,7 @@ class PoultryDatabase:
             t.transaction_type
         FROM payment_history h
         JOIN poultry_transactions t ON h.transaction_id = t.transaction_id
-        WHERE h.transaction_id = ?
+        WHERE h.transaction_id = %s
         ORDER BY h.payment_date DESC, h.created_at DESC
         '''
         
@@ -1258,7 +1266,7 @@ class PoultryDatabase:
 
     def _verify_database_setup(self):
         """Verify and fix database setup."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -1303,7 +1311,7 @@ class PoultryDatabase:
 
     def verify_and_fix_balances(self):
         """Verify and fix any inconsistencies in the database."""
-        conn = sqlite3.connect(self.db_file, timeout=20)
+        conn = self.connect()
         cursor = conn.cursor()
         
         try:
@@ -1332,7 +1340,7 @@ class PoultryDatabase:
                 print(f"Debug: Fixing system money from {current_system_money} to {calculated_system_money}")
                 cursor.execute("""
                 UPDATE system_money 
-                SET total_amount = ?, 
+                SET total_amount = %s, 
                     last_updated = CURRENT_TIMESTAMP
                 WHERE id = 1
                 """, (calculated_system_money,))
@@ -1342,8 +1350,8 @@ class PoultryDatabase:
                 user_id = user_id[0]
                 cursor.execute('''
                 SELECT COALESCE(SUM(CASE 
-                    WHEN to_user_id = ? THEN amount 
-                    WHEN from_user_id = ? THEN -amount 
+                    WHEN to_user_id = %s THEN amount 
+                    WHEN from_user_id = %s THEN -amount 
                     ELSE 0 
                 END), 0)
                 FROM money_transactions
@@ -1353,11 +1361,11 @@ class PoultryDatabase:
                 # Update the last transaction's remaining balance
                 cursor.execute("""
                 UPDATE money_transactions 
-                SET remaining_balance = ?
+                SET remaining_balance = %s
                 WHERE transaction_id = (
                     SELECT transaction_id 
                     FROM money_transactions 
-                    WHERE from_user_id = ? OR to_user_id = ?
+                    WHERE from_user_id = %s OR to_user_id = %s
                     ORDER BY date DESC, created_at DESC 
                     LIMIT 1
                 )
@@ -1377,7 +1385,7 @@ class PoultryDatabase:
 
 
     def get_per_farmer_inventory(self):
-            conn = sqlite3.connect(self.db_file)
+            conn = self.connect()
             try:
                 query = """
                 SELECT
